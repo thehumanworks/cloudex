@@ -1,0 +1,46 @@
+[package]
+name = "cloudex"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Cloudex: a richer Codex Cloud CLI (tasks, environments, apply, PR helpers, and TUI)."
+publish = false
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22.1"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4.43", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+
+# TUI
+crossterm = { version = "0.28.1", features = ["event-stream"] }
+ratatui = "0.29.0"
+unicode-width = "0.2"
+
+# Internal (sourced from the upstream Codex repo so this crate can live outside the monorepo).
+codex-core = { git = "https://github.com/openai/codex.git", package = "codex-core", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+codex-login = { git = "https://github.com/openai/codex.git", package = "codex-login", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+codex-backend-client = { git = "https://github.com/openai/codex.git", package = "codex-backend-client", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+codex-cloud-tasks-client = { git = "https://github.com/openai/codex.git", package = "codex-cloud-tasks-client", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+codex-git = { git = "https://github.com/openai/codex.git", package = "codex-git", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+codex-tui = { git = "https://github.com/openai/codex.git", package = "codex-tui", rev = "a6b2bacb5b8bb485a52d979d6d53bf1e639811d7" }
+
+[features]
+default = []
+
+# Keep upstream codex crate graph compatible (required by codex-core/codex-tui today).
+[patch.crates-io]
+crossterm = { git = "https://github.com/nornagon/crossterm", rev = "87db8bfa6dc99427fd3b071681b07fc31c6ce995" }
+ratatui = { git = "https://github.com/nornagon/ratatui", rev = "9b2ad1298408c45918ee9f8241a6f95498cdbed2" }
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }
+
+[patch."ssh://git@github.com/openai-oss-forks/tungstenite-rs.git"]
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "9200079d3b54a1ff51072e24d81fd354f085156f" }

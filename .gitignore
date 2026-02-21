@@ -1,0 +1,36 @@
+# Build outputs
+/target/
+**/target/
+**/*.rs.bk
+**/*.rlib
+**/*.d
+**/*.profraw
+**/*.profdata
+
+# Rust tooling metadata
+/.cargo/
+/.cargo/config.toml
+
+# Test/build artifacts
+**/*.log
+/coverage/
+coverage/
+
+# IDE and editor metadata
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+
+# macOS filesystem artifacts
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+*.icloud
