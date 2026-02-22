@@ -16,23 +16,8 @@ This binary is meant to complement (not replace) `codex cloud`:
 From this crate directory:
 
 ```bash
-cargo build
+cargo build [--release]
 ```
-
-Or from anywhere:
-
-```bash
-cargo build --manifest-path /path/to/cloudex/Cargo.toml
-```
-
-## Standalone extraction
-
-This crate is intentionally standalone and does not rely on the root `codex-rs` workspace.
-Internal Codex dependencies are pulled from `https://github.com/openai/codex.git`, so you can move
-`cloudex/` into its own repository and keep building it without the monorepo workspace.
-
-When kept inside this monorepo, root workspace commands (`cargo check --workspace`, `cargo test --workspace`)
-do not include this crate. Run checks explicitly with `--manifest-path /path/to/cloudex/Cargo.toml`.
 
 ## Authentication
 
