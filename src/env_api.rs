@@ -1,6 +1,7 @@
 use crate::OutputFormat;
 use crate::auth::Session;
 use crate::auth::normalize_base_url;
+use anyhow::Context;
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,17 +117,97 @@ pub async fn delete_environment(session: &Session, env_id: &str) -> anyhow::Resu
     }
 }
 
+const DEFAULT_MACHINE_ID: &str = "wham-public/wham-universal";
+
+fn machine_id_from_codex_state(codex_home: &std::path::Path) -> Option<String> {
+    let path = codex_home.join(".codex-global-state.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("electron-persisted-atom-state")
+        .and_then(|v| v.get("environment"))
+        .and_then(|v| v.get("machine_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_machine_id(session: &Session) -> String {
+    std::env::var("CODEX_CLOUD_MACHINE_ID")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| machine_id_from_codex_state(&session.codex_home))
+        .unwrap_or_else(|| DEFAULT_MACHINE_ID.to_string())
+}
+
+async fn resolve_github_repo_selector(owner: &str, repo: &str) -> anyhow::Result<String> {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let mut req = reqwest::Client::new()
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, "cloudex");
+    if let Some(token) = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GH_TOKEN").ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        req = req.bearer_auth(token);
+    }
+
+    let res = req.send().await?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("GET {url} failed: {status}; body={body}");
+    }
+
+    let parsed: Value = serde_json::from_str(&body)?;
+    let repo_id = parsed
+        .get("id")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            parsed
+                .get("id")
+                .and_then(Value::as_i64)
+                .and_then(|n| (n >= 0).then_some(n as u64))
+        })
+        .ok_or_else(|| anyhow::anyhow!("GitHub API response did not include a numeric repo id"))?;
+    Ok(format!("github-{repo_id}"))
+}
+
 fn parse_owner_repo(input: &str) -> Option<(String, String)> {
-    let s = input.trim();
+    let mut s = input.trim();
     if s.is_empty() {
         return None;
     }
-    if let Some((owner, repo)) = s.split_once('/') {
-        if !owner.is_empty() && !repo.is_empty() {
-            return Some((owner.to_string(), repo.to_string()));
+    s = s.trim_matches('/');
+    s = s.trim_end_matches(".git");
+
+    for prefix in [
+        "git@github.com:",
+        "https://github.com/",
+        "http://github.com/",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
         }
     }
-    None
+
+    let trimmed = s.trim_matches('/').trim_end_matches(".git");
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
 }
 
 fn git_remotes() -> Vec<String> {
@@ -356,7 +437,12 @@ pub async fn cmd_env(
             }
         }
         super::EnvCmd::Create(args) => {
-            let body = if let Some(path_or_dash) = args.raw_json {
+            let super::EnvCreateArgs {
+                label,
+                repo,
+                raw_json,
+            } = args;
+            let body = if let Some(path_or_dash) = raw_json {
                 let raw = if path_or_dash == "-" {
                     let mut buf = String::new();
                     std::io::stdin().read_to_string(&mut buf)?;
@@ -367,17 +453,49 @@ pub async fn cmd_env(
                 serde_json::from_str::<Value>(&raw)?
             } else {
                 // Best-effort body based on (label, repo). This is NOT guaranteed to match the backend.
+                let label = label.or_else(|| repo.clone()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--label is required when --raw-json is not set (or pass --repo to use it as the label)"
+                    )
+                })?;
+                let parsed_repo = match repo.as_deref() {
+                    Some(raw_repo) => Some(
+                        parse_owner_repo(raw_repo)
+                            .ok_or_else(|| anyhow::anyhow!("--repo must be in owner/repo form"))?,
+                    ),
+                    None => None,
+                };
+
                 let mut obj = serde_json::Map::new();
-                if let Some(label) = args.label {
-                    obj.insert("label".to_string(), Value::String(label));
-                }
-                if let Some(repo) = args.repo {
-                    if let Some((owner, repo)) = parse_owner_repo(&repo) {
-                        obj.insert(
-                            "repo".to_string(),
-                            serde_json::json!({"provider":"github", "owner": owner, "repo": repo}),
-                        );
+                obj.insert("label".to_string(), Value::String(label));
+
+                // ChatGPT /wham/environments currently requires machine_id + repos.
+                if normalize_base_url(&session.base_url).contains("/backend-api") {
+                    obj.insert(
+                        "machine_id".to_string(),
+                        Value::String(resolve_machine_id(session)),
+                    );
+                    let mut repos: Vec<Value> = Vec::new();
+                    if let Some((owner, repo)) = parsed_repo.as_ref() {
+                        let selector = resolve_github_repo_selector(owner, repo)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to resolve GitHub repo id for {owner}/{repo}; \
+set GITHUB_TOKEN or GH_TOKEN for private repos, or pass --raw-json with repos=[\"github-<id>\"]"
+                                )
+                            })?;
+                        repos.push(Value::String(selector));
                     }
+                    obj.insert("repos".to_string(), Value::Array(repos));
+                }
+
+                // Keep the older singular repo shape for best-effort compatibility.
+                if let Some((owner, repo)) = parsed_repo.as_ref() {
+                    obj.insert(
+                        "repo".to_string(),
+                        serde_json::json!({"provider":"github", "owner": owner, "repo": repo}),
+                    );
                 }
                 Value::Object(obj)
             };
